@@ -1,0 +1,24 @@
+[package]
+name = "photo-duplicate-finder"
+version.workspace = true
+edition.workspace = true
+description = "Find and review duplicate photos on macOS"
+authors = ["muratyuksel"]
+
+[lib]
+name = "photo_duplicate_finder_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+photo-core = { path = "../crates/photo-core" }
+scan-engine = { path = "../crates/scan-engine" }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
