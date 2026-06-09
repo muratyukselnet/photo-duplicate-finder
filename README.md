@@ -18,8 +18,10 @@ macOS desktop app for finding and reviewing duplicate photos in large libraries.
   - Exact copies (BLAKE3)
   - Visually similar images (dHash + pHash with LSH bucketing)
   - Burst sequences (EXIF time window)
+- Optionally incude raw files with same names
 - Review UI with tiled groups, zoom, multi-photo compare slider
-- Keep selected / keep all, then move duplicates to macOS Trash
+- Easy short cuts, loop focusing photos: tab, select focused: space, select all: cmd+a, save(trash unselected): cmd+s, compare selected: cmd+b  
+- Keep selected / keep all, then move rest to macOS Trash
 - Photographer metadata: filename, dimensions, dates, ISO, aperture, shutter, focal length
 
 ## Prerequisites
