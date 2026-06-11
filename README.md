@@ -20,7 +20,12 @@ macOS desktop app for finding and reviewing duplicate photos in large libraries.
   - Burst sequences (EXIF time window)
 - Optionally incude raw files with same names
 - Review UI with tiled groups, zoom, multi-photo compare slider
-- Easy short cuts, loop focusing photos: tab, select focused: space, select all: cmd+a, save(trash unselected): cmd+s, compare selected: cmd+b  
+- Easy short cuts,
+  - loop focusing photos: tab
+  - select focused: space
+  - select all: cmd+a
+  - save(trash unselected): cmd+s
+  - compare selected: cmd+b  
 - Keep selected / keep all, then move rest to macOS Trash
 - Photographer metadata: filename, dimensions, dates, ISO, aperture, shutter, focal length
 
@@ -85,5 +90,4 @@ scan-engine (jwalk, BLAKE3, image_hasher, rusqlite)
 ## Notes
 
 - Photos Library (`.photoslibrary`) is not opened directly in v1 — export or select a subfolder
-- RAW formats (CR2, NEF, ARW) are planned for a future release
 - Scanning large libraries (100k+ files) is designed for incremental resume and WAL-backed SQLite writes
