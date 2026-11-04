@@ -92,6 +92,24 @@ pub struct FileMember {
     pub companion_raw_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub companion_raw_size: Option<u64>,
+    pub ai: Option<AiMember>,
+    pub protected: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiMember {
+    pub decision: String,
+    pub score: Option<f64>,
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiVerdict {
+    pub group_type: String,
+    pub reason: String,
+    pub deciding_tier: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +121,7 @@ pub struct DuplicateGroupSummary {
     pub member_count: u32,
     pub review_status: ReviewStatus,
     pub bytes_recoverable: u64,
+    pub ai_bucket: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +133,8 @@ pub struct DuplicateGroupDetail {
     pub review_status: ReviewStatus,
     pub members: Vec<FileMember>,
     pub bytes_recoverable: u64,
+    pub ai_bucket: Option<String>,
+    pub ai_verdict: Option<AiVerdict>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

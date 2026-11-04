@@ -12,7 +12,7 @@ use serde_json;
 use crate::paths;
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 pub struct Database {
     conn: Connection,
@@ -42,11 +42,9 @@ impl Database {
 
         let version: Option<i32> = self
             .conn
-            .query_row(
-                "SELECT version FROM schema_version LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -60,10 +58,7 @@ impl Database {
                 .map_err(|e| AppError::Database(e.to_string()))?;
         } else if current < 2 {
             self.conn
-                .execute(
-                    "ALTER TABLE files ADD COLUMN companion_raw_path TEXT",
-                    [],
-                )
+                .execute("ALTER TABLE files ADD COLUMN companion_raw_path TEXT", [])
                 .map_err(|e| AppError::Database(e.to_string()))?;
             self.conn
                 .execute(
@@ -78,6 +73,17 @@ impl Database {
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
+
+        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS image_features (content_hash TEXT NOT NULL, extractor_version TEXT NOT NULL, features_json TEXT NOT NULL, computed_at TEXT NOT NULL, PRIMARY KEY(content_hash, extractor_version));
+            CREATE TABLE IF NOT EXISTS ai_group_results (group_id INTEGER PRIMARY KEY REFERENCES duplicate_groups(id) ON DELETE CASCADE, result_json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS ai_group_verdicts (group_key TEXT NOT NULL, model_id TEXT NOT NULL, verdict_json TEXT NOT NULL, PRIMARY KEY(group_key, model_id));")
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        self.conn
+            .execute(
+                "UPDATE schema_version SET version = ?1",
+                params![SCHEMA_VERSION],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -219,6 +225,79 @@ impl Database {
             )
             .optional()
             .map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    pub fn touch_file_for_scan(
+        &self,
+        session_id: &str,
+        path: &str,
+        generation: i64,
+        companion_raw_path: Option<&str>,
+        companion_raw_size: Option<u64>,
+    ) -> AppResult<()> {
+        self.conn.execute("UPDATE files SET scan_generation = ?1, deleted_at = NULL, companion_raw_path = ?2, companion_raw_size = ?3 WHERE session_id = ?4 AND path = ?5", params![generation, companion_raw_path, companion_raw_size, session_id, path]).map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_ai_features(&self, hash: &str, version: &str) -> AppResult<Option<String>> {
+        self.conn.query_row("SELECT features_json FROM image_features WHERE content_hash = ?1 AND extractor_version = ?2", params![hash, version], |r| r.get(0)).optional().map_err(|e| AppError::Database(e.to_string()))
+    }
+    pub fn put_ai_features(&self, hash: &str, version: &str, json: &str) -> AppResult<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO image_features VALUES (?1, ?2, ?3, ?4)",
+                params![hash, version, json, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+    pub fn set_ai_result(&self, group_id: i64, json: &str) -> AppResult<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO ai_group_results VALUES (?1, ?2)",
+                params![group_id, json],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+    pub fn get_ai_result(&self, group_id: i64) -> AppResult<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT result_json FROM ai_group_results WHERE group_id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
+    pub fn clear_ai_cache(&self) -> AppResult<()> {
+        self.conn
+            .execute_batch("DELETE FROM image_features; DELETE FROM ai_group_results; DELETE FROM ai_group_verdicts;")
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+    pub fn get_cached_verdict(&self, key: &str, model: &str) -> AppResult<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT verdict_json FROM ai_group_verdicts WHERE group_key = ?1 AND model_id = ?2",
+                params![key, model],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
+    pub fn put_cached_verdict(&self, key: &str, model: &str, json: &str) -> AppResult<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO ai_group_verdicts VALUES (?1, ?2, ?3)",
+                params![key, model, json],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+    pub fn clear_session_ai_results(&self, session_id: &str) -> AppResult<()> {
+        self.conn.execute("DELETE FROM ai_group_results WHERE group_id IN (SELECT id FROM duplicate_groups WHERE session_id = ?1)", params![session_id]).map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
     }
 
     pub fn upsert_file(
@@ -396,7 +475,10 @@ impl Database {
                 .prepare(sql)
                 .map_err(|e| AppError::Database(e.to_string()))?;
             let rows = stmt
-                .query_map(params![session_id, status, limit, offset], map_group_summary)
+                .query_map(
+                    params![session_id, status, limit, offset],
+                    map_group_summary,
+                )
                 .map_err(|e| AppError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| AppError::Database(e.to_string()))?;
@@ -488,17 +570,15 @@ impl Database {
                     size: row.get::<_, i64>(2)? as u64,
                     width: row.get(3)?,
                     height: row.get(4)?,
-                    created_at: row
-                        .get::<_, Option<String>>(5)?
-                        .map(|s| parse_dt(&s)),
-                    modified_at: row
-                        .get::<_, Option<String>>(6)?
-                        .map(|s| parse_dt(&s)),
+                    created_at: row.get::<_, Option<String>>(5)?.map(|s| parse_dt(&s)),
+                    modified_at: row.get::<_, Option<String>>(6)?.map(|s| parse_dt(&s)),
                     exif,
                     is_keeper: is_keeper.map(|v| v != 0),
                     thumbnail_key,
                     companion_raw_path,
                     companion_raw_size: companion_raw_size.map(|v| v.max(0) as u64),
+                    ai: None,
+                    protected: Vec::new(),
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?
@@ -514,15 +594,31 @@ impl Database {
             review_status: str_to_review_status(&review_status),
             members,
             bytes_recoverable,
+            ai_bucket: None,
+            ai_verdict: None,
         })
     }
 
     pub fn set_keepers(&self, group_id: i64, keeper_file_ids: &[i64]) -> AppResult<()> {
+        let detail = self.get_group_detail(group_id)?;
+        if keeper_file_ids
+            .iter()
+            .any(|id| !detail.members.iter().any(|m| m.file_id == *id))
+        {
+            return Err(AppError::Other("Select valid photos in this group".into()));
+        }
         let tx = self.begin_transaction()?;
 
         tx.execute(
-            "UPDATE duplicate_members SET is_keeper = 0 WHERE group_id = ?1",
-            params![group_id],
+            "UPDATE duplicate_members SET is_keeper = ?2 WHERE group_id = ?1",
+            params![
+                group_id,
+                if keeper_file_ids.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                }
+            ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -533,6 +629,12 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
+
+        tx.execute(
+            "UPDATE duplicate_groups SET review_status = 'pending' WHERE id = ?1",
+            params![group_id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -554,6 +656,11 @@ impl Database {
         group_id: i64,
         keeper_file_ids: &[i64],
     ) -> AppResult<TrashResult> {
+        if keeper_file_ids.is_empty() {
+            return Err(AppError::Other(
+                "Select at least one photo to keep before moving duplicates to Trash".into(),
+            ));
+        }
         self.set_keepers(group_id, keeper_file_ids)?;
         self.move_duplicates_to_trash(group_id)
     }
@@ -615,7 +722,7 @@ impl Database {
             }
         }
 
-        if trashed_count > 0 {
+        if errors.is_empty() {
             self.resolve_group(group_id)?;
         }
 
@@ -691,8 +798,19 @@ impl Database {
     pub fn files_for_clustering(
         &self,
         session_id: &str,
-    ) -> AppResult<Vec<(i64, String, u64, Option<u32>, Option<u32>, Option<String>, Option<u64>, Option<u64>, Option<String>)>>
-    {
+    ) -> AppResult<
+        Vec<(
+            i64,
+            String,
+            u64,
+            Option<u32>,
+            Option<u32>,
+            Option<String>,
+            Option<u64>,
+            Option<u64>,
+            Option<String>,
+        )>,
+    > {
         let mut stmt = self
             .conn
             .prepare(
@@ -745,6 +863,7 @@ fn map_group_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<DuplicateGroup
         review_status: str_to_review_status(&row.get::<_, String>(3)?),
         member_count: row.get::<_, i64>(4)? as u32,
         bytes_recoverable: 0,
+        ai_bucket: None,
     })
 }
 

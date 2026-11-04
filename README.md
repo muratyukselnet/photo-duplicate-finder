@@ -20,6 +20,8 @@ macOS desktop app for finding and reviewing duplicate photos in large libraries.
   - Burst sequences (EXIF time window)
 - Optionally incude raw files with same names
 - Review UI with tiled groups, zoom, multi-photo compare slider
+- Local AI-assisted review with keeper suggestions, protection labels and review buckets
+- ImageIO decoding for HEIC and supported camera RAW formats, with a bundled Swift helper
 - Easy short cuts,
   - loop focusing photos: tab
   - select focused: space
@@ -34,6 +36,7 @@ macOS desktop app for finding and reviewing duplicate photos in large libraries.
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Node.js 22+](https://nodejs.org/)
 - macOS 12+
+- Xcode Command Line Tools (Swift compiler, for building the bundled helper)
 
 Install Tauri prerequisites: https://tauri.app/start/prerequisites/
 
@@ -62,9 +65,12 @@ make test
 2. Click **Choose folder** and select a directory with known duplicate photos
 3. Wait for the scan to finish (progress shows files/sec and phase)
 4. Review duplicate groups in the tiled grid
-5. Select photos to keep, then click **Keep selected** (unselected copies go to Trash)
-6. Quit the app and reopen — your session appears on the home screen with **Resume**
-7. Multi-select photos and use **Compare selected** for the zoom slider
+5. Optionally click **Run AI review**. Open **AI settings** to choose a preset, enable local analysis, or protect folder names. Review suggestions in **Ready to confirm**, **Needs you**, and **Variants, kept**.
+6. Select photos to keep, then click **Keep selected · Trash rest** and review the confirmation. Nothing moves to Trash until you confirm. **Keep all** keeps the whole group.
+7. Quit the app and reopen — your session appears on the home screen with **Resume**
+8. Multi-select photos and use **Compare selected** for the zoom slider
+
+AI review is a separate, cancellable local job and costs $0. Cloud providers and API keys are not part of this release. Selection means **keep**. Ambiguous comparisons stay in **Needs you**; changing camera settings or focus intent favors preserving variants. XMP sidecars are conservatively protected, as are rated/labeled/edited files and RAW-backed photos. Undo restores keeper flags only; restore trashed files using Finder’s **Put Back**.
 
 ## Data location
 
@@ -74,6 +80,8 @@ Application data is stored at:
 
 - `index.db` — SQLite index of scanned files and duplicate groups
 - `thumbs/` — generated thumbnail cache
+- `ai-settings.json` — local review preferences (no credentials)
+- AI features and review results are stored in `index.db`; **Clear AI cache** removes analysis without deleting photos
 
 Deleting a session from the home screen removes database records only; your photo files are never deleted unless you explicitly move duplicates to Trash during review.
 

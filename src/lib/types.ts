@@ -47,6 +47,8 @@ export interface FileMember {
   modifiedAt?: string | null;
   exif?: ExifData | null;
   isKeeper?: boolean | null;
+  ai?: { decision: "keep" | "discard" | "unsure"; score: number | null; flags: string[] } | null;
+  protected?: string[];
   thumbnailKey: string;
   companionRawPath?: string | null;
   companionRawSize?: number | null;
@@ -59,6 +61,7 @@ export interface DuplicateGroupSummary {
   memberCount: number;
   reviewStatus: ReviewStatus;
   bytesRecoverable: number;
+  aiBucket?: AiBucket | null;
 }
 
 export interface DuplicateGroupDetail {
@@ -67,7 +70,9 @@ export interface DuplicateGroupDetail {
   confidence: number;
   reviewStatus: ReviewStatus;
   members: FileMember[];
+  aiVerdict?: { groupType: string; reason: string; decidingTier: string } | null;
   bytesRecoverable: number;
+  aiBucket?: AiBucket | null;
 }
 
 export interface TrashResult {
@@ -84,4 +89,19 @@ export interface ScanConfig {
   phashThreshold?: number;
   burstWindowSecs?: number;
   includeRaw?: boolean;
+}
+
+export type AiBucket = "ready_to_confirm" | "needs_you" | "variants_kept";
+export interface AiSettings {
+  preset: "conservative" | "balanced" | "aggressive";
+  tier1Enabled: boolean;
+  protectedFolders: string[];
+}
+export interface AiCapabilities { tier1Available: boolean; reason?: string | null }
+export interface AiReviewProgress {
+  sessionId: string;
+  status: "running" | "complete" | "cancelled" | "failed";
+  groupsProcessed: number;
+  groupsTotal: number;
+  error?: string | null;
 }

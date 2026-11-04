@@ -46,9 +46,13 @@ impl ScanEngine {
         config: Option<ScanConfig>,
     ) -> AppResult<String> {
         let id = new_session_id();
-        let session_name = name
-            .map(str::to_string)
-            .unwrap_or_else(|| Path::new(root_path).file_name().and_then(|n| n.to_str()).unwrap_or("Scan").to_string());
+        let session_name = name.map(str::to_string).unwrap_or_else(|| {
+            Path::new(root_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Scan")
+                .to_string()
+        });
         let mut scan_config = preset.to_config();
         if let Some(custom) = config {
             if preset == ScanPreset::Custom {
@@ -118,11 +122,7 @@ impl ScanEngine {
         Ok(path.to_string_lossy().to_string())
     }
 
-    pub fn start_scan<F>(
-        &self,
-        session_id: &str,
-        on_progress: F,
-    ) -> AppResult<()>
+    pub fn start_scan<F>(&self, session_id: &str, on_progress: F) -> AppResult<()>
     where
         F: Fn(ScanProgress) + Send + Sync + 'static,
     {

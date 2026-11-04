@@ -24,3 +24,7 @@ dist-ssr
 
 /target
 src-tauri/target
+
+# Generated native helper and Swift build products
+/src-tauri/binaries/photo-analysis-*
+/native/photo-analysis/.build/

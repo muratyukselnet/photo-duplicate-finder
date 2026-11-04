@@ -109,6 +109,9 @@ pub fn plan_scan_entries(all_files: &[PathBuf], config: &ScanConfig) -> ScanEntr
     let mut companion_raw_paths = HashSet::new();
 
     for image_path in &scannable {
+        if is_standalone_raw_path(image_path) {
+            continue;
+        }
         let Some(parent) = image_path.parent() else {
             continue;
         };
@@ -192,6 +195,22 @@ mod tests {
 
         assert_eq!(plan.entries, vec![tif]);
         assert!(plan.companion_raw_by_image.is_empty());
+    }
+
+    #[test]
+    fn standalone_raw_is_scanned_only_when_enabled() {
+        let raw = PathBuf::from("/photos/standalone.arw");
+        let enabled = ScanConfig {
+            include_raw: true,
+            ..ScanConfig::default()
+        };
+        assert_eq!(
+            plan_scan_entries(std::slice::from_ref(&raw), &enabled).entries,
+            vec![raw.clone()]
+        );
+        assert!(plan_scan_entries(&[raw], &ScanConfig::default())
+            .entries
+            .is_empty());
     }
 
     #[test]

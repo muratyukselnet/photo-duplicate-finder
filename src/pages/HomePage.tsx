@@ -74,6 +74,7 @@ export function HomePage() {
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-8 p-8">
       <header className="space-y-2">
+        <Button className="float-right" variant="secondary" onClick={() => navigate("/settings")}>AI settings</Button>
         <p className="text-sm uppercase tracking-[0.2em] text-primary">
           Photo Duplicate Finder
         </p>

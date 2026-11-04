@@ -20,6 +20,21 @@ const BATCH_SIZE: usize = 500;
 const CHECKPOINT_INTERVAL: u64 = 1000;
 const PROGRESS_INTERVAL_MS: u64 = 2500;
 
+struct ProgressTicker {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for ProgressTicker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
+        }
+    }
+}
+
 struct ProgressReporter {
     session_id: String,
     files_processed: Arc<AtomicU64>,
@@ -69,11 +84,11 @@ impl ProgressReporter {
         (processed, path)
     }
 
-    fn spawn_ticker(self: &Arc<Self>) -> JoinHandle<()> {
+    fn spawn_ticker(self: &Arc<Self>) -> ProgressTicker {
         let reporter = Arc::clone(self);
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             while !reporter.stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(PROGRESS_INTERVAL_MS));
+                std::thread::park_timeout(Duration::from_millis(PROGRESS_INTERVAL_MS));
                 if reporter.stop.load(Ordering::Relaxed) {
                     break;
                 }
@@ -90,12 +105,11 @@ impl ProgressReporter {
                     groups_found: 0,
                 });
             }
-        })
-    }
-
-    fn stop_ticker(&self, handle: JoinHandle<()>) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = handle.join();
+        });
+        ProgressTicker {
+            stop: Arc::clone(&self.stop),
+            handle: Some(handle),
+        }
     }
 }
 
@@ -186,13 +200,8 @@ pub fn run_scan(
     } = plan_scan_entries(&all_files, config);
 
     let total_estimate = entries.len() as u64;
-    db.lock().upsert_checkpoint(
-        session_id,
-        ScanPhase::Hashing,
-        0,
-        total_estimate,
-        None,
-    )?;
+    db.lock()
+        .upsert_checkpoint(session_id, ScanPhase::Hashing, 0, total_estimate, None)?;
 
     emit_progress(
         db,
@@ -215,7 +224,6 @@ pub fn run_scan(
     let ticker = reporter.spawn_ticker();
 
     let mut batch = Vec::with_capacity(BATCH_SIZE);
-    let mut last_path: Option<String> = None;
 
     for path in entries {
         if controller.cancel.load(Ordering::SeqCst) {
@@ -252,22 +260,28 @@ pub fn run_scan(
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(0);
 
-        if let Some((_, existing_size, existing_mtime)) = db
-            .lock()
-            .get_existing_file_meta(session_id, &path_str)?
-        {
+        let existing = db.lock().get_existing_file_meta(session_id, &path_str)?;
+        if let Some((_, existing_size, existing_mtime)) = existing {
             if existing_size == size && existing_mtime == mtime {
+                let raw = companion_raw_by_image.get(&path);
+                let raw_path = raw.map(|p| p.to_string_lossy().to_string());
+                let raw_size = raw.and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
+                db.lock().touch_file_for_scan(
+                    session_id,
+                    &path_str,
+                    scan_generation,
+                    raw_path.as_deref(),
+                    raw_size,
+                )?;
                 files_processed += 1;
-                last_path = Some(path_str.clone());
                 reporter.set_files_processed(files_processed);
-                reporter.set_current_path(last_path.clone());
+                reporter.set_current_path(Some(path_str.clone()));
                 continue;
             }
         }
 
         batch.push(path);
-        last_path = Some(path_str.clone());
-        reporter.set_current_path(last_path.clone());
+        reporter.set_current_path(Some(path_str.clone()));
 
         if batch.len() >= BATCH_SIZE {
             files_processed += process_batch(
@@ -288,7 +302,7 @@ pub fn run_scan(
                     ScanPhase::Hashing,
                     files_processed,
                     total_estimate,
-                    last_path.as_deref(),
+                    Some(&path_str),
                 )?;
             }
         }
@@ -307,7 +321,7 @@ pub fn run_scan(
         reporter.set_files_processed(files_processed);
     }
 
-    reporter.stop_ticker(ticker);
+    drop(ticker);
 
     db.lock()
         .mark_missing_deleted(session_id, scan_generation)?;
@@ -329,7 +343,9 @@ pub fn run_scan(
         .into_iter()
         .map(
             |(id, path, size, width, height, blake3, dhash, phash, exif_json)| {
-                file_record_from_row(id, path, size, width, height, blake3, dhash, phash, exif_json)
+                file_record_from_row(
+                    id, path, size, width, height, blake3, dhash, phash, exif_json,
+                )
             },
         )
         .collect();
@@ -386,7 +402,13 @@ fn process_batch(
     let results: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            let result = process_file(path, config).ok()?;
+            let result = match process_file(path, config) {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "Could not index photo");
+                    return None;
+                }
+            };
             batch_in_progress.fetch_add(1, Ordering::Relaxed);
             *current_path.lock() = Some(result.path.clone());
             Some(result)
@@ -400,11 +422,8 @@ fn process_batch(
     for result in results {
         let companion_raw_path = companion_raw_by_image.get(Path::new(&result.path));
         let companion_raw = companion_raw_path.map(|p| p.to_string_lossy().to_string());
-        let companion_raw_size = companion_raw_path.and_then(|p| {
-            std::fs::metadata(p)
-                .ok()
-                .map(|metadata| metadata.len())
-        });
+        let companion_raw_size = companion_raw_path
+            .and_then(|p| std::fs::metadata(p).ok().map(|metadata| metadata.len()));
 
         let file_id = db_guard.upsert_file(
             &tx,
@@ -483,17 +502,19 @@ fn process_file(path: &Path, config: &ScanConfig) -> AppResult<ProcessedFile> {
     };
 
     let (dhash, phash) = if config.visual_similar {
-        let (d, p) = perceptual_hashes(path)?;
-        (Some(d), Some(p))
+        match perceptual_hashes(path) {
+            Ok((d, p)) => (Some(d), Some(p)),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "Visual decode unavailable; retaining photo for exact matching");
+                (None, None)
+            }
+        }
     } else {
         (None, None)
     };
 
-    let exif_json = if config.burst_detection {
-        exif_to_json(path)
-    } else {
-        None
-    };
+    // Culling also needs camera settings when burst clustering is disabled.
+    let exif_json = exif_to_json(path);
 
     Ok(ProcessedFile {
         path: path.to_string_lossy().to_string(),
@@ -544,4 +565,80 @@ fn emit_progress(
         current_path: current_path.map(str::to_string),
         groups_found,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescan_preserves_unchanged_files_and_removes_only_missing_files() {
+        let folder = tempfile::tempdir().unwrap();
+        let first = folder.path().join("first.png");
+        let second = folder.path().join("second.png");
+        image::RgbImage::from_pixel(16, 16, image::Rgb([40, 80, 120]))
+            .save(&first)
+            .unwrap();
+        std::fs::copy(&first, &second).unwrap();
+        let config = photo_core::ScanPreset::ExactOnly.to_config();
+        let db = Mutex::new(Database::open_in_memory().unwrap());
+        db.lock()
+            .create_session("rescan", "Rescan", folder.path().to_str().unwrap(), &config)
+            .unwrap();
+        let callbacks = ScanCallbacks {
+            on_progress: Arc::new(|_| {}),
+        };
+        for _ in 0..2 {
+            run_scan(
+                &db,
+                "rescan",
+                folder.path(),
+                &config,
+                &ScanController::new(),
+                &callbacks,
+            )
+            .unwrap();
+            assert_eq!(db.lock().files_for_clustering("rescan").unwrap().len(), 2);
+            assert_eq!(db.lock().count_groups("rescan").unwrap(), 1);
+        }
+        std::fs::remove_file(second).unwrap();
+        run_scan(
+            &db,
+            "rescan",
+            folder.path(),
+            &config,
+            &ScanController::new(),
+            &callbacks,
+        )
+        .unwrap();
+        assert_eq!(db.lock().files_for_clustering("rescan").unwrap().len(), 1);
+        assert_eq!(db.lock().count_groups("rescan").unwrap(), 0);
+    }
+
+    #[test]
+    fn dropping_progress_ticker_stops_it_without_waiting_for_interval() {
+        let reporter = Arc::new(ProgressReporter::new(
+            "test",
+            0,
+            Instant::now(),
+            ScanCallbacks {
+                on_progress: Arc::new(|_| {}),
+            },
+        ));
+        let ticker = reporter.spawn_ticker();
+        drop(ticker);
+        assert!(reporter.stop.load(Ordering::Relaxed));
+        assert_eq!(Arc::strong_count(&reporter), 1);
+    }
+
+    #[test]
+    fn unsupported_decode_still_preserves_exact_fingerprint() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("unsupported.jpg");
+        std::fs::write(&path, b"not a decodable photo").unwrap();
+        let record = process_file(&path, &ScanConfig::default()).unwrap();
+        assert_eq!(record.blake3, Some(blake3_file(&path).unwrap()));
+        assert!(record.phash.is_none());
+        assert!(record.dhash.is_none());
+    }
 }

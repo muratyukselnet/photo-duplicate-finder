@@ -22,6 +22,10 @@ pub fn ensure_thumbnail(source: &Path, cache_key: &str) -> Result<PathBuf, AppEr
     let img = ImageReader::open(source)
         .map_err(|e| AppError::Image(e.to_string()))?
         .decode()
+        .or_else(|_| {
+            crate::native_helper::decode(source, THUMB_MAX_EDGE)
+                .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))
+        })
         .map_err(|e| AppError::Image(e.to_string()))?;
 
     let thumb = resize_max_edge(&img.to_rgba8(), img.width(), img.height());

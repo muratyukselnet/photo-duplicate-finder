@@ -1,18 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FileMember } from "./types";
 
-function suggestKeeper(members: FileMember[]): number | null {
-  if (members.length === 0) return null;
-  const sorted = [...members].sort((a, b) => {
-    const areaA = (a.width ?? 0) * (a.height ?? 0);
-    const areaB = (b.width ?? 0) * (b.height ?? 0);
-    if (areaA !== areaB) return areaB - areaA;
-    const takenA = a.exif?.dateTaken ? new Date(a.exif.dateTaken).getTime() : Infinity;
-    const takenB = b.exif?.dateTaken ? new Date(b.exif.dateTaken).getTime() : Infinity;
-    return takenA - takenB;
-  });
-  return sorted[0]?.fileId ?? null;
-}
+import { suggestKeeper } from "./suggestKeeper";
 
 describe("suggestKeeper", () => {
   it("prefers highest resolution", () => {
@@ -38,5 +27,18 @@ describe("suggestKeeper", () => {
     ];
 
     expect(suggestKeeper(members)).toBe(2);
+  });
+});
+
+describe("suggestKeeper dates and stability", () => {
+  const photo = (fileId: number, dateTaken?: string): FileMember => ({ fileId, path: "/photo.jpg", fileName: "photo.jpg", size: 100, thumbnailKey: String(fileId), width: 100, height: 100, exif: { dateTaken } });
+  it("returns null for an empty group", () => expect(suggestKeeper([])).toBeNull());
+  it("prefers the earliest valid capture date on equal resolution", () => {
+    expect(suggestKeeper([photo(1, "invalid"), photo(2, "2025-01-02"), photo(3, "2025-01-01")])).toBe(3);
+  });
+  it("does not reorder the input when ranking", () => {
+    const members = [photo(1, "2025-01-02"), photo(2, "2025-01-01")];
+    suggestKeeper(members);
+    expect(members.map((member) => member.fileId)).toEqual([1, 2]);
   });
 });

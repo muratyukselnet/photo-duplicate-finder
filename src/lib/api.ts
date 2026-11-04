@@ -124,3 +124,19 @@ export async function getThumbnailUrl(
 export function getFullImageUrl(sourcePath: string): string {
   return convertFileSrc(sourcePath);
 }
+
+export async function getAiCapabilities(): Promise<import("./types").AiCapabilities> {
+  return invoke("get_ai_capabilities");
+}
+export async function getAiSettings(): Promise<import("./types").AiSettings> {
+  return invoke("get_ai_settings");
+}
+export async function setAiSettings(settings: import("./types").AiSettings): Promise<void> {
+  return invoke("set_ai_settings", { settings });
+}
+export async function clearAiCache(): Promise<void> { return invoke("clear_ai_cache"); }
+export async function startAiReview(sessionId: string): Promise<void> { return invoke("start_ai_review", { sessionId }); }
+export async function cancelAiReview(sessionId: string): Promise<void> { return invoke("cancel_ai_review", { sessionId }); }
+export async function getAiReviewProgress(sessionId: string): Promise<import("./types").AiReviewProgress> {
+  return invoke("get_ai_review_progress", { sessionId });
+}

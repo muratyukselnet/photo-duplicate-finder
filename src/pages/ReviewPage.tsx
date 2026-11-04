@@ -1,6 +1,11 @@
+import { withConfirmation } from "../lib/confirmation";
 import { ZoomIn } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { AiReviewPanel } from "../components/AiReviewPanel";
+import { suggestKeeper } from "../lib/suggestKeeper";
+import { bucketLabels, initialKeeperSelection } from "../lib/keeperSelection";
+import type { AiBucket } from "../lib/types";
 import { CompareSlider } from "../components/CompareSlider";
 import { ImageTile } from "../components/ImageTile";
 import { Lightbox } from "../components/Lightbox";
@@ -10,23 +15,10 @@ import { keepAllInGroup, keepSelectedAndTrash, setKeepers } from "../lib/api";
 import type { FileMember } from "../lib/types";
 import { cn, formatBytes, kindLabel } from "../lib/utils";
 
-function suggestKeeper(members: FileMember[]): number | null {
-  if (members.length === 0) return null;
-  const sorted = [...members].sort((a, b) => {
-    const areaA = (a.width ?? 0) * (a.height ?? 0);
-    const areaB = (b.width ?? 0) * (b.height ?? 0);
-    if (areaA !== areaB) return areaB - areaA;
-    const takenA = a.exif?.dateTaken ? new Date(a.exif.dateTaken).getTime() : Infinity;
-    const takenB = b.exif?.dateTaken ? new Date(b.exif.dateTaken).getTime() : Infinity;
-    return takenA - takenB;
-  });
-  return sorted[0]?.fileId ?? null;
-}
 
 type HistoryEntry = {
   groupId: number;
   keeperIds: number[];
-  detail: FileMember[];
 };
 
 export function ReviewPage() {
@@ -38,7 +30,8 @@ export function ReviewPage() {
     setActiveGroupId,
     activeGroup,
     refreshGroups,
-    selectNextGroup,
+    loading,
+    error: loadError,
   } = useDuplicateGroups(sessionId ?? null);
 
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -47,6 +40,23 @@ export function ReviewPage() {
   const [compareOpen, setCompareOpen] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [bucket, setBucket] = useState<AiBucket | "all" | "not_analyzed">("all");
+  const drafts = useRef(new Map<number, number[]>());
+  const visibleGroups = groups.filter((group) => bucket === "all" || (group.aiBucket ?? "not_analyzed") === bucket);
+
+  useEffect(() => { drafts.current.clear(); setSelectedIds([]); setHistory([]); }, [sessionId]);
+
+  useEffect(() => {
+    if (!visibleGroups.some((group) => group.id === activeGroupId)) {
+      setActiveGroupId(visibleGroups[0]?.id ?? null);
+    }
+  }, [bucket, groups, activeGroupId, setActiveGroupId]);
+
+  useEffect(() => {
+    if (!activeGroup) return;
+    setSelectedIds(drafts.current.get(activeGroup.id) ?? initialKeeperSelection(activeGroup));
+  }, [activeGroup]);
 
   const suggestedKeeperId = useMemo(
     () => (activeGroup ? suggestKeeper(activeGroup.members) : null),
@@ -62,18 +72,20 @@ export function ReviewPage() {
     setCompareOpen(false);
   }, [activeGroupId]);
 
+  const updateSelection = useCallback((next: number[]) => {
+    if (!activeGroup) return;
+    drafts.current.set(activeGroup.id, next);
+    setSelectedIds(next);
+  }, [activeGroup]);
+
   const toggleSelect = useCallback((fileId: number) => {
-    setSelectedIds((current) =>
-      current.includes(fileId)
-        ? current.filter((id) => id !== fileId)
-        : [...current, fileId],
-    );
-  }, []);
+    if (activeGroup?.members.find((member) => member.fileId === fileId)?.protected?.length && selectedIds.includes(fileId)) return;
+    updateSelection(selectedIds.includes(fileId) ? selectedIds.filter((id) => id !== fileId) : [...selectedIds, fileId]);
+  }, [activeGroup, selectedIds, updateSelection]);
 
   const selectAll = useCallback(() => {
-    if (!activeGroup) return;
-    setSelectedIds(activeGroup.members.map((member) => member.fileId));
-  }, [activeGroup]);
+    if (activeGroup) updateSelection(activeGroup.members.map((member) => member.fileId));
+  }, [activeGroup, updateSelection]);
 
   const pushHistory = useCallback((group: NonNullable<typeof activeGroup>) => {
     const keeperIds = group.members
@@ -84,36 +96,39 @@ export function ReviewPage() {
       {
         groupId: group.id,
         keeperIds,
-        detail: group.members,
       },
     ]);
   }, []);
 
   const keepSelected = useCallback(async () => {
     if (!activeGroup || selectedIds.length === 0 || busy) return;
+    const keepers = [...new Set([...selectedIds, ...activeGroup.members.filter((member) => member.protected?.length).map((member) => member.fileId)])];
+    const discarded = activeGroup.members.filter((member) => !keepers.includes(member.fileId));
     setBusy(true);
+    setError(null);
     try {
+      await withConfirmation(`${activeGroup.aiVerdict ? "Review AI suggestions before continuing.\n\n" : ""}Keep ${keepers.length} photos and move ${discarded.length} photos (${formatBytes(discarded.reduce((sum, member) => sum + member.size + (member.companionRawSize ?? 0), 0))}) to macOS Trash? RAW companions move with their photos. Restore trashed files with Finder’s Put Back; undo only restores keeper flags.`, { title: "Confirm moving photos to Trash", kind: "warning", okLabel: "Move to Trash", cancelLabel: "Cancel" }, async () => {
+      const result = await keepSelectedAndTrash(activeGroup.id, keepers);
+      if (result.errors.length) setError(result.errors.join("\n"));
       pushHistory(activeGroup);
-      await keepSelectedAndTrash(activeGroup.id, selectedIds);
       await refreshGroups();
-      selectNextGroup();
-    } finally {
+      });
+    } catch (cause) { setError(String(cause)); } finally {
       setBusy(false);
     }
-  }, [activeGroup, busy, pushHistory, refreshGroups, selectNextGroup, selectedIds]);
+  }, [activeGroup, busy, pushHistory, refreshGroups, selectedIds]);
 
   const keepAll = useCallback(async () => {
     if (!activeGroup || busy) return;
     setBusy(true);
     try {
-      pushHistory(activeGroup);
       await keepAllInGroup(activeGroup.id);
+      pushHistory(activeGroup);
       await refreshGroups();
-      selectNextGroup();
-    } finally {
+    } catch (cause) { setError(String(cause)); } finally {
       setBusy(false);
     }
-  }, [activeGroup, busy, pushHistory, refreshGroups, selectNextGroup]);
+  }, [activeGroup, busy, pushHistory, refreshGroups]);
 
   const undoLast = useCallback(async () => {
     const last = history[history.length - 1];
@@ -121,12 +136,14 @@ export function ReviewPage() {
     setBusy(true);
     try {
       await setKeepers(last.groupId, last.keeperIds);
+      drafts.current.delete(last.groupId);
+      await refreshGroups();
       setHistory((current) => current.slice(0, -1));
       setActiveGroupId(last.groupId);
-    } finally {
+    } catch (cause) { setError(String(cause)); } finally {
       setBusy(false);
     }
-  }, [busy, history, setActiveGroupId]);
+  }, [busy, history, refreshGroups, setActiveGroupId]);
 
   const focusNextMember = useCallback(() => {
     if (!activeGroup || activeGroup.members.length === 0) return;
@@ -147,7 +164,7 @@ export function ReviewPage() {
 
   useEffect(() => {
     const onKeyDown = async (event: KeyboardEvent) => {
-      if (!activeGroup || overlayOpen) return;
+      if (!activeGroup || busy || overlayOpen || (event.target instanceof HTMLElement && (event.target.closest("input, textarea, select, button, [contenteditable=true], [role=dialog]")))) return;
       const meta = event.metaKey;
 
       if (event.code === "Space") {
@@ -185,6 +202,7 @@ export function ReviewPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     activeGroup,
+    busy,
     focusNextMember,
     keepSelected,
     openCompare,
@@ -213,9 +231,10 @@ export function ReviewPage() {
             </Button>
           </div>
         </div>
+        <div className="px-4 pt-3"><label className="text-xs text-muted-foreground" htmlFor="bucket-filter">Review bucket</label><select id="bucket-filter" value={bucket} onChange={(event) => setBucket(event.target.value as typeof bucket)} className="mt-1 w-full rounded-md border border-border bg-background p-2 text-sm"><option value="all">All groups ({groups.length})</option>{Object.entries(bucketLabels).map(([key, label]) => <option key={key} value={key}>{label} ({groups.filter((group) => (group.aiBucket ?? "not_analyzed") === key).length})</option>)}</select></div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 pt-3">
           <div className="space-y-2 pr-1">
-            {groups.map((group) => (
+            {visibleGroups.map((group) => (
               <button
                 key={group.id}
                 type="button"
@@ -233,6 +252,7 @@ export function ReviewPage() {
                     {Math.round(group.confidence * 100)}%
                   </span>
                 </div>
+                <p className="mt-1 text-xs text-primary">{bucketLabels[group.aiBucket ?? "not_analyzed"]}</p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {group.memberCount} photos · {formatBytes(group.bytesRecoverable)} recoverable
                 </p>
@@ -247,10 +267,11 @@ export function ReviewPage() {
           <div>
             <p className="text-sm text-muted-foreground">Reviewing duplicates</p>
             <h1 className="text-xl font-semibold">
-              {activeGroup ? kindLabel(activeGroup.kind) : "No groups left"}
+              {activeGroup ? kindLabel(activeGroup.kind) : groups.length === 0 ? "No groups left" : "Review groups"}
             </h1>
           </div>
           <div className="flex gap-2">
+            <Button variant="ghost" onClick={() => navigate("/settings")}>AI settings</Button>
             <Button
               variant="secondary"
               disabled={compareMembers.length < 2}
@@ -262,6 +283,9 @@ export function ReviewPage() {
           </div>
         </header>
 
+        {sessionId && <AiReviewPanel key={sessionId} sessionId={sessionId} onRefresh={refreshGroups} />}
+        {(error || loadError) && <p role="alert" className="px-6 py-2 text-sm text-destructive">{error || loadError}</p>}
+        {activeGroup?.aiVerdict && <div className="border-b border-border px-6 py-3 text-sm"><span className="font-medium">{bucketLabels[activeGroup.aiBucket ?? "not_analyzed"]}</span><span className="ml-2 text-muted-foreground">{activeGroup.aiVerdict.reason}</span><p className="mt-1 text-xs text-muted-foreground">{activeGroup.aiVerdict.decidingTier} · Selection means keep. You can adjust suggestions before confirming.</p></div>}
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <section className="min-h-0 min-w-0 flex-1 overflow-y-auto p-6">
             {activeGroup ? (
@@ -272,7 +296,7 @@ export function ReviewPage() {
                     member={member}
                     selected={selectedIds.includes(member.fileId)}
                     focused={index === focusedIndex}
-                    suggestedKeeper={member.fileId === suggestedKeeperId}
+                    suggestedKeeper={activeGroup.aiVerdict ? member.ai?.decision === "keep" : member.fileId === suggestedKeeperId}
                     onToggleSelect={() => toggleSelect(member.fileId)}
                     onOpenZoom={() => setLightboxMember(member)}
                   />
@@ -280,7 +304,7 @@ export function ReviewPage() {
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-muted-foreground">
-                All duplicate groups in this session have been reviewed.
+                {loading ? "Loading groups…" : loadError ? "Could not load groups. Return Home and reopen this session to retry." : groups.length === 0 ? "All duplicate groups in this session have been reviewed." : visibleGroups.length === 0 ? "No groups in this bucket. Choose another filter." : "Loading group…"}
               </div>
             )}
           </section>
@@ -293,7 +317,7 @@ export function ReviewPage() {
                 disabled={busy || selectedIds.length === 0}
                 onClick={keepSelected}
               >
-                Keep selected
+                Keep selected · Trash rest
               </Button>
               <Button
                 size="lg"
@@ -304,11 +328,13 @@ export function ReviewPage() {
               >
                 Keep all
               </Button>
+              <Button variant="ghost" disabled={busy || history.length === 0} onClick={undoLast}>Undo keeper flags</Button>
+              <p className="text-xs text-muted-foreground">Undo restores keeper flags only. To restore photos from Trash, use Finder’s Put Back.</p>
               <div className="rounded-lg bg-muted p-4 text-xs text-muted-foreground">
                 <p className="font-medium text-foreground">Shortcuts</p>
                 <p className="mt-2">Tab focus photo · Space toggle select</p>
                 <p>⌘A select all · ⌘S keep selected · ⌘B compare</p>
-                <p>⌘Z undo · Esc close zoom/compare</p>
+                <p>⌘Z undo keeper flags · Esc close zoom/compare</p>
               </div>
             </div>
           </aside>

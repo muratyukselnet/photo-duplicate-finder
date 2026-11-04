@@ -1,6 +1,15 @@
 # AI-assisted keeper selection: research and plan
 
-Status: proposal, not implemented. Prices and model names were checked on 2026-11-03 and will change; the design keeps them in editable settings for that reason.
+Status: Phase 1 local implementation added on 2026-11-04; the cloud and Foundation Models phases below remain proposals. Prices and model names in the research were checked on 2026-11-03 and are not used by the local implementation.
+
+### Implementation notes (2026-11-04)
+
+- The Review page now starts a separate cancellable local job with three review buckets, protection badges, reasons, keeper preselection, and editable manual selections. Settings contain presets, local analysis and protected folders. Nothing moves to Trash without an awaited native confirmation.
+- The bundled Swift ImageIO/Vision helper renders HEIC and supported RAW formats, applies orientation, and extracts faces, saliency, feature prints, aesthetics where available, clipping, camera metadata, and source-resolution subject/background crop sharpness. Unsupported analysis falls back to manual review. Cancellation occurs between photos; helper calls have a 60-second timeout.
+- Rules handle verified exact copies, camera-setting variants, edited names, embedded XMP ratings/labels/picks, sidecars, protected folders and RAW companions. All XMP sidecars and RAW-backed photos are conservatively protected. Mixed groups with evidence of different intent keep every member.
+- Feature cache keys include content hash and extractor/OS version. Rules verdicts use sorted member hashes; duplicate-content path preferences are recalculated. Local scoring is reapplied from cached features for the current preset. Current file content and protection are checked again before Trash. Rescanning now correctly preserves unchanged files.
+- **Deliberate conservative differences from the proposal:** technical reject suggestions require a two-photo visual/burst comparison, matching camera settings and face positions, and both extreme detail loss and severe clipping. Presets change those evidence gates; the speculative confidence formula is not treated as a calibrated probability. Larger ambiguous groups remain in *Needs you*. Focus/settings variants keep all, without choosing artistic sub-group winners.
+- Eye-state/motion/noise classifiers, person masks, manufacturer-specific maker-note parsing, re-export ranking, sub-group outlines, bulk acceptance and cached-superset ranking reuse are not implemented. A real photographer-labelled example set is still needed before broadening automatic preselection. Feature extraction on a real HEIC, synthetic intent/safety tests, cache reuse after moves, browser review flows, and desktop builds are checked separately; these are not a claim of photographic benchmark accuracy.
 
 Related: [MCP and skills (deferred draft)](ai-mcp-and-skills.md).
 

@@ -82,6 +82,7 @@ export function ImageTile({
         type="button"
         onClick={onToggleSelect}
         className="flex w-full cursor-pointer items-start gap-2 p-3 text-left transition hover:bg-muted/50"
+        disabled={selected && (member.protected?.length ?? 0) > 0}
         aria-label={selected ? "Deselect photo" : "Select photo"}
       >
         <span
@@ -96,6 +97,8 @@ export function ImageTile({
         </span>
         <div className="min-w-0 flex-1">
           <MetadataBar member={member} compact />
+          {(member.protected?.length ?? 0) > 0 && <p className="mt-2 text-xs text-primary">Protected · {member.protected?.map((flag) => flag.split("_").join(" ")).join(", ")}</p>}
+          {member.ai?.flags.length ? <div className="mt-2 flex flex-wrap gap-1">{member.ai.flags.map((flag) => <span key={flag} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{flag.split("_").join(" ")}</span>)}</div> : null}
           <p className="mt-1 text-[11px] text-muted-foreground">
             {formatBytes(member.size)}
           </p>

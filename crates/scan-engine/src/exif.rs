@@ -20,8 +20,8 @@ pub fn read_exif(path: &Path) -> Option<ExifData> {
     let aperture = get_rational(&exif, Tag::FNumber).map(|v| format!("f/{v:.1}"));
     let shutter_speed = get_rational(&exif, Tag::ExposureTime).map(format_shutter);
     let focal_length = get_rational(&exif, Tag::FocalLength).map(|v| format!("{v:.0}mm"));
-    let date_taken = get_datetime(&exif, Tag::DateTimeOriginal)
-        .or_else(|| get_datetime(&exif, Tag::DateTime));
+    let date_taken =
+        get_datetime(&exif, Tag::DateTimeOriginal).or_else(|| get_datetime(&exif, Tag::DateTime));
 
     Some(ExifData {
         camera_make,

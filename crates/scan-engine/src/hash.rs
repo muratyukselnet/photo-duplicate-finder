@@ -28,6 +28,10 @@ pub fn perceptual_hashes(path: &Path) -> Result<(u64, u64), AppError> {
     let img = ImageReader::open(path)
         .map_err(|e| AppError::Image(e.to_string()))?
         .decode()
+        .or_else(|_| {
+            crate::native_helper::decode(path, 1600)
+                .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))
+        })
         .map_err(|e| AppError::Image(e.to_string()))?;
 
     let dhasher = HasherConfig::new().hash_alg(HashAlg::Gradient).to_hasher();
@@ -59,6 +63,10 @@ pub fn image_dimensions(path: &Path) -> Result<(Option<u32>, Option<u32>), AppEr
     let reader = ImageReader::open(path).map_err(|e| AppError::Image(e.to_string()))?;
     let dimensions = reader
         .into_dimensions()
+        .or_else(|_| {
+            crate::native_helper::dimensions(path)
+                .map_err(|e| image::ImageError::IoError(std::io::Error::other(e.to_string())))
+        })
         .map_err(|e| AppError::Image(e.to_string()))?;
     Ok((Some(dimensions.0), Some(dimensions.1)))
 }
@@ -70,7 +78,7 @@ pub fn is_supported_image(path: &Path) -> bool {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
                 "jpg" | "jpeg" | "png" | "gif" | "webp" | "tiff" | "tif" | "heic" | "heif"
-            )
+            ) || crate::raw::is_raw_extension(ext)
         })
         .unwrap_or(false)
 }

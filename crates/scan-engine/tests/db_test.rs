@@ -32,7 +32,8 @@ fn session_create_list_and_checkpoint_round_trip() {
 fn duplicate_group_insert_and_query() {
     let db = Database::open_in_memory().expect("db");
     let config = ScanConfig::default();
-    db.create_session("s1", "Scan", "/tmp", &config).expect("create");
+    db.create_session("s1", "Scan", "/tmp", &config)
+        .expect("create");
 
     let tx = db.begin_transaction().expect("tx");
     let id1 = db
@@ -83,4 +84,98 @@ fn duplicate_group_insert_and_query() {
 
     let detail = db.get_group_detail(group_id).expect("detail");
     assert_eq!(detail.members.len(), 2);
+}
+
+#[test]
+fn caches_survive_group_recreation_and_clear_without_touching_keepers() {
+    let db = Database::open_in_memory().unwrap();
+    db.create_session("cache", "Cache", "/tmp", &ScanConfig::default())
+        .unwrap();
+    let tx = db.begin_transaction().unwrap();
+    let a = db
+        .upsert_file(
+            &tx,
+            "cache",
+            "/tmp/culling-fixture-a",
+            1,
+            1,
+            None,
+            None,
+            None,
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let b = db
+        .upsert_file(
+            &tx,
+            "cache",
+            "/tmp/culling-fixture-b",
+            1,
+            1,
+            None,
+            None,
+            None,
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    let id = db
+        .insert_duplicate_group("cache", DuplicateKind::Exact, 1.0, &[a, b])
+        .unwrap();
+    db.put_ai_features("hash", "version", r#"{"sharpness":1}"#)
+        .unwrap();
+    db.put_cached_verdict("group-key", "rules-v1", "verdict")
+        .unwrap();
+    db.set_ai_result(id, "materialized").unwrap();
+    db.clear_groups_for_session("cache").unwrap();
+    assert!(db.get_ai_result(id).unwrap().is_none());
+    assert!(db.get_ai_features("hash", "version").unwrap().is_some());
+    assert_eq!(
+        db.get_cached_verdict("group-key", "rules-v1")
+            .unwrap()
+            .as_deref(),
+        Some("verdict")
+    );
+    let id = db
+        .insert_duplicate_group("cache", DuplicateKind::Exact, 1.0, &[a, b])
+        .unwrap();
+    db.set_keepers(id, &[a, b]).unwrap();
+    assert!(db.set_keepers(id, &[i64::MAX]).is_err());
+    assert!(db
+        .get_group_detail(id)
+        .unwrap()
+        .members
+        .iter()
+        .all(|m| m.is_keeper == Some(true)));
+    // Keeping all through the selected flow must resolve without calling Trash.
+    assert_eq!(db.move_duplicates_to_trash(id).unwrap().trashed_count, 0);
+    assert_eq!(
+        db.get_group_detail(id).unwrap().review_status,
+        photo_core::ReviewStatus::Resolved
+    );
+    db.clear_ai_cache().unwrap();
+    assert!(db.get_ai_features("hash", "version").unwrap().is_none());
+    assert!(db
+        .get_cached_verdict("group-key", "rules-v1")
+        .unwrap()
+        .is_none());
+    assert!(db
+        .get_group_detail(id)
+        .unwrap()
+        .members
+        .iter()
+        .all(|m| m.is_keeper == Some(true)));
+    db.set_keepers(id, &[]).unwrap();
+    let detail = db.get_group_detail(id).unwrap();
+    assert_eq!(detail.review_status, photo_core::ReviewStatus::Pending);
+    assert!(detail.members.iter().all(|m| m.is_keeper.is_none()));
+    assert!(db.keep_selected_and_trash(id, &[]).is_err());
 }

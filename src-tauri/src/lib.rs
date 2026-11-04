@@ -35,6 +35,13 @@ pub fn run() {
             commands::move_duplicates_to_trash,
             commands::keep_selected_and_trash,
             commands::ensure_thumbnail,
+            commands::get_ai_capabilities,
+            commands::get_ai_settings,
+            commands::set_ai_settings,
+            commands::clear_ai_cache,
+            commands::start_ai_review,
+            commands::cancel_ai_review,
+            commands::get_ai_review_progress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
